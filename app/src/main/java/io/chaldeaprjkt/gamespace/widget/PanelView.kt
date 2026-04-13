@@ -19,6 +19,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.database.ContentObserver
+import android.hardware.display.BrightnessInfo
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Handler
@@ -32,6 +34,7 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import com.android.settingslib.display.BrightnessUtils.*
 import io.chaldeaprjkt.gamespace.R
 import io.chaldeaprjkt.gamespace.utils.di.ServiceViewEntryPoint
 import io.chaldeaprjkt.gamespace.utils.entryPointOf
@@ -40,6 +43,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 class PanelView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
@@ -53,6 +57,41 @@ class PanelView @JvmOverloads constructor(
 
     private var brightnessObserver: ContentObserver? = null
     private var isTrackingBrightness = false
+
+    private val displayManager by lazy {
+        context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+    }
+
+    private fun currentBrightnessInfo(): BrightnessInfo? = context.display?.brightnessInfo
+
+    private fun percentFromBrightnessInfo(info: BrightnessInfo): Float {
+        val gamma = convertLinearToGammaFloat(
+            info.brightness,
+            info.brightnessMinimum,
+            info.brightnessMaximum
+        )
+        val min = GAMMA_SPACE_MIN.toFloat()
+        val max = GAMMA_SPACE_MAX.toFloat()
+        if (max <= min) return 0f
+        return ((gamma - min) / (max - min)).coerceIn(0f, 1f)
+    }
+
+    private fun setBrightnessPercent(percent: Float): Boolean {
+        val display = context.display ?: return false
+        val info = currentBrightnessInfo() ?: return false
+
+        val gamma = (GAMMA_SPACE_MIN + percent * (GAMMA_SPACE_MAX - GAMMA_SPACE_MIN)).roundToInt()
+        val linear = convertGammaToLinearFloat(
+            gamma,
+            info.brightnessMinimum,
+            info.brightnessMaximum
+        ).coerceIn(0f, 1f)
+
+        return runCatching {
+            displayManager.setBrightness(display.displayId, linear)
+            true
+        }.getOrDefault(false)
+    }
 
     init {
         LayoutInflater.from(context).inflate(R.layout.panel_view, this, true)
@@ -105,14 +144,17 @@ class PanelView @JvmOverloads constructor(
         val valueView: TextView? = runCatching { requireViewById<TextView>(R.id.brightness_value) }.getOrNull()
 
         fun updateFromSystem() {
-            val value = systemSettings.brightness
-            val max = seekBar.max.takeIf { it > 0 } ?: 255
-            val progress = value.coerceIn(0, max)
+            val max = seekBar.max.takeIf { it > 0 } ?: 1000
+
+            val percent = currentBrightnessInfo()?.let { info ->
+                percentFromBrightnessInfo(info)
+            } ?: (systemSettings.brightness.coerceIn(0, 255) / 255f)
+
             if (!isTrackingBrightness) {
-                seekBar.progress = progress
+                seekBar.progress = (percent * max).roundToInt().coerceIn(0, max)
             }
-            val percent = (progress * 100) / max
-            valueView?.text = "$percent%"
+
+            valueView?.text = "${(percent * 100).roundToInt()}%"
         }
 
         updateFromSystem()
@@ -127,10 +169,15 @@ class PanelView @JvmOverloads constructor(
 
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                 if (!fromUser) return
-                systemSettings.brightness = progress
-                val max = seekBar.max.takeIf { it > 0 } ?: 255
-                val percent = (progress * 100) / max
-                valueView?.text = "$percent%"
+
+                val max = seekBar.max.takeIf { it > 0 } ?: 1000
+                val percent = (progress.toFloat() / max).coerceIn(0f, 1f)
+
+                if (!setBrightnessPercent(percent)) {
+                    systemSettings.brightness = (percent * 255).roundToInt()
+                }
+
+                valueView?.text = "${(percent * 100).roundToInt()}%"
             }
 
             override fun onStopTrackingTouch(seekBar: SeekBar) {

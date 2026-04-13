@@ -36,7 +36,7 @@
         android:id="@+id/brightness_seekbar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:max="255"
+        android:max="1000"
         android:progressTint="?android:attr/textColorPrimary"
         android:thumbTint="?android:attr/textColorPrimary" />
 
